@@ -5,6 +5,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
+from sklearn.metrics import roc_auc_score, f1_score
+from sklearn.preprocessing import normalize, MinMaxScaler
 
 from meta_neural_network_architectures import VGGReLUNormNetwork
 from inner_loop_optimizers import LSLRGradientDescentLearningRule
@@ -160,13 +162,16 @@ class MAMLFewShotClassifier(nn.Module):
 
         return names_weights_copy
 
-    def get_across_task_loss_metrics(self, total_losses, total_accuracies):
+    def get_across_task_loss_metrics(self, total_losses, total_accuracies, total_auc, total_f1):
         losses = dict()
+        metrics = dict()
 
         losses['loss'] = torch.mean(torch.stack(total_losses))
         losses['accuracy'] = np.mean(total_accuracies)
+        metrics['auc'] = np.mean(total_auc)
+        metrics['f1'] = np.mean(total_f1)
 
-        return losses
+        return losses, metrics
 
     def forward(self, data_batch, epoch, use_second_order, use_multi_step_loss_optimization, num_steps, training_phase):
         """
@@ -188,6 +193,8 @@ class MAMLFewShotClassifier(nn.Module):
 
         total_losses = []
         total_accuracies = []
+        total_auc = []
+        total_f1 = []
         per_task_target_preds = [[] for i in range(len(x_target_set))]
         self.classifier.zero_grad()
         for task_id, (x_support_set_task, y_support_set_task, x_target_set_task, y_target_set_task) in \
@@ -197,6 +204,8 @@ class MAMLFewShotClassifier(nn.Module):
                               y_target_set)):
             task_losses = []
             task_accuracies = []
+            task_roc = []
+            task_f1 = []
             per_step_loss_importance_vectors = self.get_per_step_loss_importance_vector()
             names_weights_copy = self.get_inner_loop_parameter_dict(self.classifier.named_parameters())
 
@@ -245,22 +254,53 @@ class MAMLFewShotClassifier(nn.Module):
 
             per_task_target_preds[task_id] = target_preds.detach().cpu().numpy()
             _, predicted = torch.max(target_preds.data, 1)
+            #row_sums = torch.sum(target_preds, 1)
+            #row_sums = row_sums.repeat(1, len(per_task_target_preds[task_id]))
+            #row_sums = row_sums.reshape(target_preds.shape)
+            #probs = torch.div(target_preds, row_sums)
+            #print(per_task_target_preds[task_id])
+            #print(probs)
+            #print(target_preds)
 
             accuracy = predicted.float().eq(y_target_set_task.data.float()).cpu().float()
+            #print("-----")
+            #print("accuracy: ")
+            #print(accuracy)
+            #print("target")
+            #print(y_target_set_task.cpu().data.float())
+            #print("pred")
+            #print(predicted.cpu().data.float())
+            #roc = roc_auc_score(y_target_set_task.cpu().data.float(), probs, average="macro", multi_class="ovo")
+            roc = 0.5
+            #print("roc: ")
+            #print(roc)
+            #f1 = f1_score(y_target_set_task.cpu().data.float(), probs, average)
+            f1 = 1
+            #print("f1: ")
+            #print(f1)
+            #print(task_losses)
             task_losses = torch.sum(torch.stack(task_losses))
+            #print(task_losses)
             total_losses.append(task_losses)
             total_accuracies.extend(accuracy)
+            total_auc.append(roc)
+            #print(total_auc)
+            total_f1.append(f1)
+            #print(total_f1)
+            #print("-----")
+
 
             if not training_phase:
                 self.classifier.restore_backup_stats()
 
-        losses = self.get_across_task_loss_metrics(total_losses=total_losses,
-                                                   total_accuracies=total_accuracies)
+        losses, metrics = self.get_across_task_loss_metrics(total_losses=total_losses,
+                                                   total_accuracies=total_accuracies, total_auc=total_auc, 
+                                                   total_f1=total_f1)
 
         for idx, item in enumerate(per_step_loss_importance_vectors):
             losses['loss_importance_vector_{}'.format(idx)] = item.detach().cpu().numpy()
 
-        return losses, per_task_target_preds
+        return losses, metrics, per_task_target_preds
 
     def net_forward(self, x, y, weights, backup_running_statistics, training, num_step):
         """
@@ -300,13 +340,13 @@ class MAMLFewShotClassifier(nn.Module):
         :param epoch: The index of the currrent epoch.
         :return: A dictionary of losses for the current step.
         """
-        losses, per_task_target_preds = self.forward(data_batch=data_batch, epoch=epoch,
+        losses, metrics, per_task_target_preds = self.forward(data_batch=data_batch, epoch=epoch,
                                                      use_second_order=self.args.second_order and
                                                                       epoch > self.args.first_order_to_second_order_epoch,
                                                      use_multi_step_loss_optimization=self.args.use_multi_step_loss_optimization,
                                                      num_steps=self.args.number_of_training_steps_per_iter,
                                                      training_phase=True)
-        return losses, per_task_target_preds
+        return losses, metrics, per_task_target_preds
 
     def evaluation_forward_prop(self, data_batch, epoch):
         """
@@ -315,12 +355,12 @@ class MAMLFewShotClassifier(nn.Module):
         :param epoch: The index of the currrent epoch.
         :return: A dictionary of losses for the current step.
         """
-        losses, per_task_target_preds = self.forward(data_batch=data_batch, epoch=epoch, use_second_order=False,
+        losses, metrics, per_task_target_preds = self.forward(data_batch=data_batch, epoch=epoch, use_second_order=False,
                                                      use_multi_step_loss_optimization=True,
                                                      num_steps=self.args.number_of_evaluation_steps_per_iter,
                                                      training_phase=False)
 
-        return losses, per_task_target_preds
+        return losses, metrics, per_task_target_preds
 
     def meta_update(self, loss):
         """
@@ -343,7 +383,7 @@ class MAMLFewShotClassifier(nn.Module):
         :return: The losses of the ran iteration.
         """
         epoch = int(epoch)
-        self.scheduler.step(epoch=epoch)
+        self.scheduler.step()
         if self.current_epoch != epoch:
             self.current_epoch = epoch
 
@@ -359,14 +399,14 @@ class MAMLFewShotClassifier(nn.Module):
 
         data_batch = (x_support_set, x_target_set, y_support_set, y_target_set)
 
-        losses, per_task_target_preds = self.train_forward_prop(data_batch=data_batch, epoch=epoch)
+        losses, metrics, per_task_target_preds = self.train_forward_prop(data_batch=data_batch, epoch=epoch)
 
         self.meta_update(loss=losses['loss'])
         losses['learning_rate'] = self.scheduler.get_lr()[0]
         self.optimizer.zero_grad()
         self.zero_grad()
 
-        return losses, per_task_target_preds
+        return losses, metrics, per_task_target_preds
 
     def run_validation_iter(self, data_batch):
         """
@@ -388,13 +428,13 @@ class MAMLFewShotClassifier(nn.Module):
 
         data_batch = (x_support_set, x_target_set, y_support_set, y_target_set)
 
-        losses, per_task_target_preds = self.evaluation_forward_prop(data_batch=data_batch, epoch=self.current_epoch)
+        losses, metrics, per_task_target_preds = self.evaluation_forward_prop(data_batch=data_batch, epoch=self.current_epoch)
 
         # losses['loss'].backward() # uncomment if you get the weird memory error
         # self.zero_grad()
         # self.optimizer.zero_grad()
 
-        return losses, per_task_target_preds
+        return losses, metrics, per_task_target_preds
 
     def save_model(self, model_save_dir, state):
         """

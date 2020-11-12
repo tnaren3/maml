@@ -10,9 +10,10 @@ import torch
 from torchvision import transforms
 from PIL import ImageFile
 ImageFile.LOAD_TRUNCATED_IMAGES = True
+from sklearn.model_selection import train_test_split
+
 
 from utils.parser_utils import get_args
-
 
 class rotate_image(object):
 
@@ -105,6 +106,11 @@ def get_transforms_for_dataset(dataset_name, args, k):
 
             transforms.ToTensor(), transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))])]
 
+    elif 'covid' in dataset_name:
+
+        transform_train = [rotate_image(k=k, channels=args.image_channels), transforms.ToTensor()]
+        transform_evaluate = [transforms.ToTensor()]
+
     return transform_train, transform_evaluate
 
 
@@ -153,12 +159,16 @@ class FewShotLearningDatasetParallel(Dataset):
 
         self.rng = np.random.RandomState(seed=self.seed['val'])
         self.datasets = self.load_dataset()
-
+        #print(self.datasets)
         self.indexes = {"train": 0, "val": 0, 'test': 0}
         self.dataset_size_dict = {
-            "train": {key: len(self.datasets['train'][key]) for key in list(self.datasets['train'].keys())},
-            "val": {key: len(self.datasets['val'][key]) for key in list(self.datasets['val'].keys())},
-            'test': {key: len(self.datasets['test'][key]) for key in list(self.datasets['test'].keys())}}
+             "train": {key: len(self.datasets['train'][key]) for key in list(self.datasets['train'].keys())},
+             "val": {key: len(self.datasets['val'][key]) for key in list(self.datasets['val'].keys())},
+             'test': {key: len(self.datasets['test'][key]) for key in list(self.datasets['test'].keys())}}
+        #self.dataset_size_dict = {
+        #    "train": {key: len(self.datasets['train'][key]) for key in list(self.datasets['train'].keys())},
+        #    "val": {key: len(self.datasets['val'][key]) for key in list(self.datasets['val'].keys())},
+        #    'test': {key: len(self.datasets['test'][key]) for key in list(self.datasets['test'].keys())}}
         self.label_set = self.get_label_set()
         self.data_length = {name: np.sum([len(self.datasets[name][key])
                                           for key in self.datasets[name]]) for name in self.datasets.keys()}
@@ -173,7 +183,8 @@ class FewShotLearningDatasetParallel(Dataset):
         :return: Three sets, the training set, validation set and test sets (referred to as the meta-train,
         meta-val and meta-test in the paper)
         """
-        rng = np.random.RandomState(seed=self.seed['val'])
+        rng1 = np.random.RandomState(seed=self.seed['train'])
+        rng2 = np.random.RandomState(seed=self.seed['val'])
 
         if self.args.sets_are_pre_split == True:
             data_image_paths, index_to_label_name_dict_file, label_to_index = self.load_datapaths()
@@ -188,26 +199,39 @@ class FewShotLearningDatasetParallel(Dataset):
                 else:
                     dataset_splits[set_name][class_label] = value
         else:
+            # data_image_paths, index_to_label_name_dict_file, label_to_index = self.load_datapaths()
+            # total_label_types = len(data_image_paths)
+            # print(self.train_val_test_split)
+            # num_classes_idx = np.arange(len(data_image_paths.keys()), dtype=np.int32)
+            # rng.shuffle(num_classes_idx)
+            # keys = list(data_image_paths.keys())
+            # values = list(data_image_paths.values())
+            # new_keys = [keys[idx] for idx in num_classes_idx]
+            # new_values = [values[idx] for idx in num_classes_idx]
+            # data_image_paths = dict(zip(new_keys, new_values))
+            # # data_image_paths = self.shuffle(data_image_paths)
+            # x_train_id, x_val_id, x_test_id = int(self.train_val_test_split[0] * total_label_types), \
+            #                                   int(np.sum(self.train_val_test_split[:2]) * total_label_types), \
+            #                                   int(total_label_types)
+            # print("xtrainid, xvalid, xtestid")
+            # print(x_train_id, x_val_id, x_test_id)
+            # x_train_classes = (class_key for class_key in list(data_image_paths.keys())[:x_train_id])
+            # x_val_classes = (class_key for class_key in list(data_image_paths.keys())[x_train_id:x_val_id])
+            # x_test_classes = (class_key for class_key in list(data_image_paths.keys())[x_val_id:x_test_id])
+            # x_train, x_val, x_test = {class_key: data_image_paths[class_key] for class_key in x_train_classes}, \
+            #                          {class_key: data_image_paths[class_key] for class_key in x_val_classes}, \
+            #                          {class_key: data_image_paths[class_key] for class_key in x_test_classes},
+            # dataset_splits = {"train": x_train, "val":x_val , "test": x_test}
             data_image_paths, index_to_label_name_dict_file, label_to_index = self.load_datapaths()
             total_label_types = len(data_image_paths)
-            num_classes_idx = np.arange(len(data_image_paths.keys()), dtype=np.int32)
-            rng.shuffle(num_classes_idx)
-            keys = list(data_image_paths.keys())
-            values = list(data_image_paths.values())
-            new_keys = [keys[idx] for idx in num_classes_idx]
-            new_values = [values[idx] for idx in num_classes_idx]
-            data_image_paths = dict(zip(new_keys, new_values))
-            # data_image_paths = self.shuffle(data_image_paths)
-            x_train_id, x_val_id, x_test_id = int(self.train_val_test_split[0] * total_label_types), \
-                                              int(np.sum(self.train_val_test_split[:2]) * total_label_types), \
-                                              int(total_label_types)
-            print(x_train_id, x_val_id, x_test_id)
-            x_train_classes = (class_key for class_key in list(data_image_paths.keys())[:x_train_id])
-            x_val_classes = (class_key for class_key in list(data_image_paths.keys())[x_train_id:x_val_id])
-            x_test_classes = (class_key for class_key in list(data_image_paths.keys())[x_val_id:x_test_id])
-            x_train, x_val, x_test = {class_key: data_image_paths[class_key] for class_key in x_train_classes}, \
-                                     {class_key: data_image_paths[class_key] for class_key in x_val_classes}, \
-                                     {class_key: data_image_paths[class_key] for class_key in x_test_classes},
+            print(self.train_val_test_split)
+            x_train = {}
+            x_val = {}
+            x_test = {}
+            for key in data_image_paths:
+                x_train[key], temp = train_test_split(data_image_paths[key], train_size=self.train_val_test_split[0], random_state = rng1)
+                x_val[key], x_test[key] = train_test_split(temp, train_size=self.train_val_test_split[1]/(self.train_val_test_split[1] + self.train_val_test_split[2]), random_state = rng2)
+            #print(x_test)
             dataset_splits = {"train": x_train, "val":x_val , "test": x_test}
 
         if self.args.load_into_memory is True:
@@ -228,7 +252,7 @@ class FewShotLearningDatasetParallel(Dataset):
 
             dataset_splits = x_loaded
             self.data_loaded_in_memory = True
-
+            #print(dataset_splits)
         return dataset_splits
 
     def load_datapaths(self):
@@ -385,6 +409,12 @@ class FewShotLearningDatasetParallel(Dataset):
                 image = np.array(image, np.float32)
                 if channels == 1:
                     image = np.expand_dims(image, axis=2)
+            elif 'covid' in self.dataset_name:
+                image = image.convert(mode='L')
+                image = image.resize((self.image_height, self.image_width), resample=Image.LANCZOS)
+                image = np.array(image, np.float32)
+                if channels == 1:
+                    image = np.expand_dims(image, axis=2)
             else:
                 image = image.resize((self.image_height, self.image_width)).convert('RGB')
                 image = np.array(image, np.float32)
@@ -482,6 +512,8 @@ class FewShotLearningDatasetParallel(Dataset):
         :return: A task-set containing an image and label support set, and an image and label target set.
         """
         #seed = seed % self.args.total_unique_tasks
+        #print("size: " + str(list(self.dataset_size_dict[dataset_name].keys())))
+        #print("num: " + str(self.num_classes_per_set))
         rng = np.random.RandomState(seed)
         selected_classes = rng.choice(list(self.dataset_size_dict[dataset_name].keys()),
                                       size=self.num_classes_per_set, replace=False)
@@ -491,11 +523,14 @@ class FewShotLearningDatasetParallel(Dataset):
         episode_labels = [i for i in range(self.num_classes_per_set)]
         class_to_episode_label = {selected_class: episode_label for (selected_class, episode_label) in
                                   zip(selected_classes, episode_labels)}
-
+        #print(selected_classes)
         x_images = []
         y_labels = []
-
         for class_entry in selected_classes:
+            #print(dataset_name)
+            #print("size: " + str(self.dataset_size_dict[dataset_name][class_entry]))
+            #print("num: " + str(self.num_samples_per_class))
+            #print("tar: " + str(self.num_target_samples))
             choose_samples_list = rng.choice(self.dataset_size_dict[dataset_name][class_entry],
                                              size=self.num_samples_per_class + self.num_target_samples, replace=False)
             class_image_samples = []

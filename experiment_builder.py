@@ -24,6 +24,7 @@ class ExperimentBuilder(object):
             experiment_name=self.args.experiment_name)
 
         self.total_losses = dict()
+        self.total_metrics = dict()
         self.state = dict()
         self.state['best_val_acc'] = 0.
         self.state['best_val_iter'] = 0
@@ -66,7 +67,7 @@ class ExperimentBuilder(object):
         self.epochs_done_in_this_run = 0
         print(self.state['current_iter'], int(self.args.total_iter_per_epoch * self.args.total_epochs))
 
-    def build_summary_dict(self, total_losses, phase, summary_losses=None):
+    def build_summary_dict(self, total_losses, total_metrics, phase, summary_losses=None, summary_metrics=None):
         """
         Builds/Updates a summary dict directly from the metric dict of the current iteration.
         :param total_losses: Current dict with total losses (not aggregations) from experiment
@@ -76,12 +77,18 @@ class ExperimentBuilder(object):
         """
         if summary_losses is None:
             summary_losses = dict()
+        
+        if summary_metrics is None:
+            summary_metrics = dict()
 
         for key in total_losses:
             summary_losses["{}_{}_mean".format(phase, key)] = np.mean(total_losses[key])
             summary_losses["{}_{}_std".format(phase, key)] = np.std(total_losses[key])
 
-        return summary_losses
+        for key in total_metrics:
+            summary_metrics["{}_{}_".format(phase, key)] = total_metrics[key]
+
+        return summary_losses, summary_metrics
 
     def build_loss_summary_string(self, summary_losses):
         """
@@ -103,7 +110,7 @@ class ExperimentBuilder(object):
         z.update(second_dict)
         return z
 
-    def train_iteration(self, train_sample, sample_idx, epoch_idx, total_losses, current_iter, pbar_train):
+    def train_iteration(self, train_sample, sample_idx, epoch_idx, total_losses, total_metrics, current_iter, pbar_train):
         """
         Runs a training iteration, updates the progress bar and returns the total and current epoch train losses.
         :param train_sample: A sample from the data provider
@@ -121,7 +128,7 @@ class ExperimentBuilder(object):
             print("shape of data", x_support_set.shape, x_target_set.shape, y_support_set.shape,
                   y_target_set.shape)
 
-        losses, _ = self.model.run_train_iter(data_batch=data_batch, epoch=epoch_idx)
+        losses, metrics, _ = self.model.run_train_iter(data_batch=data_batch, epoch=epoch_idx)
 
         for key, value in zip(list(losses.keys()), list(losses.values())):
             if key not in total_losses:
@@ -129,7 +136,14 @@ class ExperimentBuilder(object):
             else:
                 total_losses[key].append(float(value))
 
-        train_losses = self.build_summary_dict(total_losses=total_losses, phase="train")
+        for key, value in zip(list(metrics.keys()), list(metrics.values())):
+            if key not in total_metrics:
+                total_metrics[key] = [float(value)]
+            else:
+                total_metrics[key].append(float(value))
+
+
+        train_losses, train_metrics = self.build_summary_dict(total_losses=total_losses, total_metrics=total_metrics, phase="train")
         train_output_update = self.build_loss_summary_string(losses)
 
         pbar_train.update(1)
@@ -137,9 +151,9 @@ class ExperimentBuilder(object):
 
         current_iter += 1
 
-        return train_losses, total_losses, current_iter
+        return train_losses, total_losses, train_metrics, total_metrics, current_iter
 
-    def evaluation_iteration(self, val_sample, total_losses, pbar_val, phase):
+    def evaluation_iteration(self, val_sample, total_losses, total_metrics, pbar_val, phase):
         """
         Runs a validation iteration, updates the progress bar and returns the total and current epoch val losses.
         :param val_sample: A sample from the data provider
@@ -151,21 +165,27 @@ class ExperimentBuilder(object):
         data_batch = (
             x_support_set, x_target_set, y_support_set, y_target_set)
 
-        losses, _ = self.model.run_validation_iter(data_batch=data_batch)
+        losses, metrics, _ = self.model.run_validation_iter(data_batch=data_batch)
         for key, value in zip(list(losses.keys()), list(losses.values())):
             if key not in total_losses:
                 total_losses[key] = [float(value)]
             else:
                 total_losses[key].append(float(value))
+        
+        for key, value in zip(list(metrics.keys()), list(metrics.values())):
+            if key not in total_metrics:
+                total_metrics[key] = [float(value)]
+            else:
+                total_metrics[key].append(float(value))
 
-        val_losses = self.build_summary_dict(total_losses=total_losses, phase=phase)
+        val_losses, val_metrics = self.build_summary_dict(total_losses=total_losses, total_metrics=total_metrics, phase=phase)
         val_output_update = self.build_loss_summary_string(losses)
 
         pbar_val.update(1)
         pbar_val.set_description(
             "val_phase {} -> {}".format(self.epoch, val_output_update))
 
-        return val_losses, total_losses
+        return val_losses, total_losses, val_metrics, total_metrics
 
     def test_evaluation_iteration(self, val_sample, model_idx, sample_idx, per_model_per_batch_preds, pbar_test):
         """
@@ -179,7 +199,7 @@ class ExperimentBuilder(object):
         data_batch = (
             x_support_set, x_target_set, y_support_set, y_target_set)
 
-        losses, per_task_preds = self.model.run_validation_iter(data_batch=data_batch)
+        losses, metrics, per_task_preds = self.model.run_validation_iter(data_batch=data_batch)
 
         per_model_per_batch_preds[model_idx].extend(list(per_task_preds))
 
@@ -209,7 +229,7 @@ class ExperimentBuilder(object):
 
         print("saved models to", self.saved_models_filepath)
 
-    def pack_and_save_metrics(self, start_time, create_summary_csv, train_losses, val_losses, state):
+    def pack_and_save_metrics(self, start_time, create_summary_csv, train_losses, train_metrics, val_losses, val_metrics, state):
         """
         Given current epochs start_time, train losses, val losses and whether to create a new stats csv file, pack stats
         and save into a statistics csv file. Return a new start time for the new epoch.
@@ -221,6 +241,8 @@ class ExperimentBuilder(object):
         :return: The current time, to be used for the next epoch.
         """
         epoch_summary_losses = self.merge_two_dicts(first_dict=train_losses, second_dict=val_losses)
+        epoch_summary_metrics = self.merge_two_dicts(first_dict=train_metrics, second_dict=val_metrics)
+        epoch_summary_losses = self.merge_two_dicts(first_dict=epoch_summary_losses, second_dict=epoch_summary_metrics)
 
         if 'per_epoch_statistics' not in state:
             state['per_epoch_statistics'] = dict()
@@ -319,9 +341,10 @@ class ExperimentBuilder(object):
                                                                       'current_iter'],
                                                     augment_images=self.augment_flag)):
                     # print(self.state['current_iter'], (self.args.total_epochs * self.args.total_iter_per_epoch))
-                    train_losses, total_losses, self.state['current_iter'] = self.train_iteration(
+                    train_losses, total_losses, train_metrics, total_metrics, self.state['current_iter'] = self.train_iteration(
                         train_sample=train_sample,
                         total_losses=self.total_losses,
+                        total_metrics=self.total_metrics,
                         epoch_idx=(self.state['current_iter'] /
                                    self.args.total_iter_per_epoch),
                         pbar_train=pbar_train,
@@ -331,13 +354,16 @@ class ExperimentBuilder(object):
                     if self.state['current_iter'] % self.args.total_iter_per_epoch == 0:
 
                         total_losses = dict()
+                        total_metrics = dict()
                         val_losses = dict()
+                        val_metrics = dict()
                         with tqdm.tqdm(total=int(self.args.num_evaluation_tasks / self.args.batch_size)) as pbar_val:
                             for _, val_sample in enumerate(
                                     self.data.get_val_batches(total_batches=int(self.args.num_evaluation_tasks / self.args.batch_size),
                                                               augment_images=False)):
-                                val_losses, total_losses = self.evaluation_iteration(val_sample=val_sample,
+                                val_losses, total_losses, val_metrics, total_metrics = self.evaluation_iteration(val_sample=val_sample,
                                                                                      total_losses=total_losses,
+                                                                                     total_metrics=total_metrics,
                                                                                      pbar_val=pbar_val, phase='val')
 
                             if val_losses["val_accuracy_mean"] > self.state['best_val_acc']:
@@ -349,19 +375,22 @@ class ExperimentBuilder(object):
 
 
                         self.epoch += 1
-                        self.state = self.merge_two_dicts(first_dict=self.merge_two_dicts(first_dict=self.state,
+                        self.state = self.merge_two_dicts(first_dict=self.merge_two_dicts(first_dict=self.merge_two_dicts(first_dict=self.merge_two_dicts(first_dict=self.state,
                                                                                           second_dict=train_losses),
-                                                          second_dict=val_losses)
+                                                          second_dict=val_losses), second_dict=train_metrics), second_dict=val_metrics)
 
                         self.save_models(model=self.model, epoch=self.epoch, state=self.state)
 
                         self.start_time, self.state = self.pack_and_save_metrics(start_time=self.start_time,
                                                                                  create_summary_csv=self.create_summary_csv,
                                                                                  train_losses=train_losses,
+                                                                                 train_metrics=train_metrics,
                                                                                  val_losses=val_losses,
+                                                                                 val_metrics=val_metrics,
                                                                                  state=self.state)
 
                         self.total_losses = dict()
+                        self.total_metrics = dict()
 
                         self.epochs_done_in_this_run += 1
 

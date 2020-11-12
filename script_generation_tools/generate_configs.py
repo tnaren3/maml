@@ -30,9 +30,14 @@ configs_list = []
 hyper_config_dict = {'omniglot': hyper_config(num_samples_per_class_range=[1, 5], num_classes_range=[20, 5],
                                               batch_size_range=[8], init_inner_loop_learning_rate_range=[0.1],
                                               num_filters=[64]),
-                     'mini-imagenet': hyper_config(num_samples_per_class_range=[1, 5],
-                                                   batch_size_range=[2], init_inner_loop_learning_rate_range=[0.01],
-                                                   num_classes_range=[5], num_filters=[48])
+                     'mini-imagenet': hyper_config(num_samples_per_class_range=[1, 5], num_classes_range=[5],
+                                              batch_size_range=[2], init_inner_loop_learning_rate_range=[0.01],
+                                              num_filters=[48]),
+                    # num_samples = range of the number of samples that could be picked from each class for a given task set
+                    # num_classes = the number of possible classes for a given task set
+                     'covid': hyper_config(num_samples_per_class_range=[1, 2, 5], num_classes_range=[1, 2, 3, 4, 5],
+                                              batch_size_range=[4], init_inner_loop_learning_rate_range=[0.1],
+                                              num_filters=[64])
                      }
 
 
@@ -112,6 +117,8 @@ for subdir, dir, files in os.walk(experiment_templates_json_dir):
                 search_name = "omniglot"
             elif "imagenet" in filepath:
                 search_name = "mini-imagenet"
+            elif "covid" in filepath:
+                search_name = "covid"
 
             for config_item in configs_list:
                 config_item = config_item._asdict()
