@@ -86,7 +86,7 @@ class ExperimentBuilder(object):
             summary_losses["{}_{}_std".format(phase, key)] = np.std(total_losses[key])
 
         for key in total_metrics:
-            summary_metrics["{}_{}_".format(phase, key)] = total_metrics[key]
+            summary_metrics["{}_{}_mean".format(phase, key)] = np.mean(total_metrics[key])
 
         return summary_losses, summary_metrics
 
